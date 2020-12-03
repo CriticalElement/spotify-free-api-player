@@ -45,6 +45,12 @@ class SpotifyPlayer:
         [self.queue.pop(index) for index in matches]
         return {'command': {'next_tracks': self.queue, 'queue_revision': self.queue_revision, 'endpoint': 'set_queue'}}
 
+    def clear_queue(self):
+        matches = ([index for index, track in enumerate(self.queue) if 'queue' == track['provider']
+                   or 'spotify:ad:' in track['uri']])
+        [self.queue.pop(index) for index in matches]
+        return {'command': {'next_tracks': self.queue, 'queue_revision': self.queue_revision, 'endpoint': 'set_queue'}}
+
     @staticmethod
     def play(track_id):
         return [{'command': {'track': {'uri': f'spotify:track:{track_id}', 'metadata': {'is_queued': True},
@@ -75,18 +81,7 @@ class SpotifyPlayer:
         self.cj._cookies['.spotify.com']['/']['sp_t'] = response.cookies
 
         guc_url = f'wss://guc-dealer.spotify.com/?access_token={self.access_token}'
-        guc_headers = {'Accept-Encoding': 'gzip, deflate, br',
-                       'Accept-Language': 'en-US,en,q=0.9',
-                       'Cache-Control': 'no-cache',
-                       'Connection': 'upgrade',
-                       'Host': 'guc-dealer.spotify.com',
-                       'Origin': 'https://open.spotify.com',
-                       'Pragma': 'no-cache',
-                       'Sec-WebSocket-Extensions': 'permessage-deflate; client_max_window_bits',
-                       'Sec-WebSocket-Key': 'randomkey',
-                       'Sec-WebSocket-Version': '13',
-                       'Upgrade': 'websocket',
-                       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)'
+        guc_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)'
                                      ' Chrome/87.0.4280.66 Safari/537.36'}
 
         self.connection_id = None
@@ -138,22 +133,8 @@ class SpotifyPlayer:
                                "volume": 65535}
                 break
 
-        device_headers = {'authority': 'guc-spclient.spotify.com',
-                          'method': 'POST',
-                          'path': '/track-playback/v1/devices',
-                          'scheme': 'https',
-                          'accept': '*/*',
-                          'accept-encoding': 'gzip, deflate, br',
-                          'accept-language': 'en-US,en;q=0.9',
-                          'authorization': f'Bearer {self.access_token}',
-                          'content-type': 'application/json',
-                          'origin': 'https://open.spotify.com',
-                          'referer': 'https://open.spotify.com/',
-                          'sec-fetch-dest': 'empty',
-                          'sec-fetch-mode': 'cors',
-                          'sec-fetch-site': 'same-site',
-                          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                                        '(KHTML, like Gecko) Chrome/87.0.4280.66 Safari/537.36'}
+        device_headers = self._default_headers.copy()
+        device_headers.update({'authorization': f'Bearer {self.access_token}'})
 
         response = self._session.post(device_url, headers=device_headers, data=json.dumps(device_data))
         if response.status_code == 200:
