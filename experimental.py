@@ -39,7 +39,9 @@ class SpotifyPlayer:
 
     @staticmethod
     def play(track_id):
-        pass
+        return [{'command': {'track': {'uri': f'spotify:track:{track_id}', 'metadata': {'is_queued': True},
+                                       'provider': 'queue'}, 'endpoint': 'add_to_queue'}},
+                {'command': {'endpoint': 'skip_next'}}]
 
     def __init__(self):
         self.cj = browser_cookie3.chrome()
