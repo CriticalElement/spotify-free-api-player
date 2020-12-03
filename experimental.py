@@ -24,7 +24,9 @@ class SpotifyPlayer:
 
     @staticmethod
     def volume(volume):
-        return {'volume': volume}
+        return {'volume': volume * 65535 / 100, 'url': 'https://guc-spclient.spotify.com/connect-state/'
+                                                'v1/connect/volume/from/player/to/device',
+                'request_type': 'PUT'}
 
     @staticmethod
     def seek_to(ms):
