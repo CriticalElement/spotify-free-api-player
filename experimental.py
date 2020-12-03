@@ -10,6 +10,8 @@ import random
 from threading import Thread
 from requests.exceptions import RequestException
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)-8s - %(name)-14s - %(message)s')
+
 
 class SpotifyPlayer:
     pause = {'command': {'endpoint': 'pause'}}
@@ -36,6 +38,12 @@ class SpotifyPlayer:
     def add_to_queue(track_id):
         return {'command': {'track': {'uri': f'spotify:track:{track_id}', 'metadata': {'is_queued': True},
                                       'provider': 'queue'}, 'endpoint': 'add_to_queue'}}
+
+    def remove_from_queue(self, track_id):
+        matches = ([index for index, track in enumerate(self.queue) if track_id in track['uri']
+                    or 'spotify:ad:' in track['uri']])
+        [self.queue.pop(index) for index in matches]
+        return {'command': {'next_tracks': self.queue, 'queue_revision': self.queue_revision, 'endpoint': 'set_queue'}}
 
     @staticmethod
     def play(track_id):
@@ -82,16 +90,29 @@ class SpotifyPlayer:
                                      ' Chrome/87.0.4280.66 Safari/537.36'}
 
         self.connection_id = None
+        self.queue_revision = None
 
         async def websocket():
             async with websockets.connect(guc_url, extra_headers=guc_headers) as ws:
+                Thread(target=lambda: start_ping_loop(ws)).start()
                 while True:
                     recv = await ws.recv()
-                    if json.loads(recv).get('headers'):
-                        if json.loads(recv)['headers'].get('Spotify-Connection-Id'):
-                            self.connection_id = json.loads(recv)['headers']['Spotify-Connection-Id']
-                    await asyncio.sleep(30) # TODO: Fix this garbage
-                    await ws.send('{"type": "ping"}')
+                    load = json.loads(recv)
+                    if load.get('headers'):
+                        if load['headers'].get('Spotify-Connection-Id'):
+                            self.connection_id = load['headers']['Spotify-Connection-Id']
+                    if load.get('payloads'):
+                        if load['payloads'][0].get('cluster'):
+                            self.queue = load['payloads'][0]['cluster']['player_state']['next_tracks']
+                            self.queue_revision = load['payloads'][0]['cluster']['player_state']['queue_revision']
+
+        def start_ping_loop(ws):
+            asyncio.new_event_loop().run_until_complete(ping_loop(ws))
+
+        async def ping_loop(ws):
+            while True:
+                await ws.send('{"type": "ping"}')
+                await asyncio.sleep(30)
 
         Thread(target=lambda: asyncio.new_event_loop().run_until_complete(websocket())).start()
 
@@ -100,16 +121,16 @@ class SpotifyPlayer:
         while True:
             if self.connection_id:
                 device_data = {"device": {"brand": "spotify", "capabilities":
-                                                              {"change_volume": True, "enable_play_token": True,
-                                                               "supports_file_media_type": True,
-                                                               "play_token_lost_behavior": "pause",
-                                                               "disable_connect": True, "audio_podcasts": True,
-                                                               "video_playback": True,
-                                                               "manifest_formats": ["file_urls_mp3",
-                                                                                    "manifest_ids_video",
-                                                                                    "file_urls_external",
-                                                                                    "file_ids_mp4",
-                                                                                    "file_ids_mp4_dual"]},
+                                          {"change_volume": True, "enable_play_token": True,
+                                           "supports_file_media_type": True,
+                                           "play_token_lost_behavior": "pause",
+                                           "disable_connect": True, "audio_podcasts": True,
+                                           "video_playback": True,
+                                           "manifest_formats": ["file_urls_mp3",
+                                                                "manifest_ids_video",
+                                                                "file_urls_external",
+                                                                "file_ids_mp4",
+                                                                "file_ids_mp4_dual"]},
                                           "device_id": self.device_id, "device_type": "computer",
                                           "metadata": {}, "model": "web_player", "name": "Spotify Player",
                                           "platform_identifier": "web_player windows 10;chrome 87.0.4280.66;desktop"},
@@ -138,6 +159,22 @@ class SpotifyPlayer:
         if response.status_code == 200:
             logging.log(logging.INFO, f'Successfully created Spotify device with id {self.device_id}.')
 
+        notifications_url = f'https://api.spotify.com/v1/me/notifications/user?connection_id={self.connection_id}'
+        notifications_headers = self._default_headers.copy()
+        notifications_headers.update({'Authorization': f'Bearer {self.access_token}'})
+        self._session.put(notifications_url, headers=notifications_headers)
+
+        hobs_url = f'https://guc-spclient.spotify.com/connect-state/v1/devices/hobs_{self.device_id}'
+        hobs_headers = self._default_headers.copy()
+        hobs_headers.update({'authorization': f'Bearer {self.access_token}'})
+        hobs_headers.update({'x-spotify-connection-id': self.connection_id})
+        hobs_data = {"member_type": "CONNECT_STATE", "device": {"device_info":
+                                                                {"capabilities": {"can_be_player": False,
+                                                                                  "hidden": True}}}}
+        response = self._session.put(hobs_url, headers=hobs_headers, data=json.dumps(hobs_data))
+        self.queue = response.json()['player_state']['next_tracks']
+        self.queue_revision = response.json()['player_state']['queue_revision']
+
     def command(self, command_dict):
         headers = {'Authorization': f'Bearer {self.access_token}'}
         currently_playing_device = self._session.get('https://api.spotify.com/v1/me/player', headers=headers)
@@ -157,6 +194,8 @@ class SpotifyPlayer:
                 response = self._session.post(player_url, headers=headers, data=json.dumps(player_data))
                 if response.status_code != 200:
                     raise RequestException(f'Command failed: {response.json()}')
+                else:
+                    logging.log(logging.INFO, 'Command executed successfully.')
         else:
             if 'url' in command_dict:
                 player_url = command_dict['url'].replace('player', self.device_id).replace('device',
@@ -175,6 +214,8 @@ class SpotifyPlayer:
                             raise RequestException(f'Command failed: {response.json()}')
                         except json.decoder.JSONDecodeError:
                             pass
+                    else:
+                        logging.log(logging.INFO, 'Command executed successfully.')
             else:
                 response = self._session.post(player_url, headers=headers, data=json.dumps(player_data))
                 if response.status_code != 200:
@@ -183,3 +224,5 @@ class SpotifyPlayer:
                         raise RequestException(f'Command failed: {response.json()}')
                     except json.decoder.JSONDecodeError:
                         pass
+                else:
+                    logging.log(logging.INFO, 'Command executed successfully.')
