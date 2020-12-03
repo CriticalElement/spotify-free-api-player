@@ -145,9 +145,37 @@ class SpotifyPlayer:
             # There are still some bugs
         player_url = f'https://guc-spclient.spotify.com/connect-state/v1/player/command/from/{self.device_id}' \
                      f'/to/{currently_playing_device}'
-        player_data = command_dict
-        player_headers = self._default_headers.copy()
-        player_headers.update({'authorization': f'Bearer {self.access_token}'})
-        response = self._session.post(player_url, headers=headers, data=json.dumps(player_data))
-        if response.status_code != 200:
-            raise RequestException(f'Command failed: {response.json()}')
+        if isinstance(command_dict, list):
+            for command in command_dict:
+                player_data = command
+                player_headers = self._default_headers.copy()
+                player_headers.update({'authorization': f'Bearer {self.access_token}'})
+                response = self._session.post(player_url, headers=headers, data=json.dumps(player_data))
+                if response.status_code != 200:
+                    raise RequestException(f'Command failed: {response.json()}')
+        else:
+            if 'url' in command_dict:
+                player_url = command_dict['url'].replace('player', self.device_id).replace('device',
+                                                                                           currently_playing_device)
+                command_dict.pop('url')
+            player_data = command_dict
+            player_headers = self._default_headers.copy()
+            player_headers.update({'authorization': f'Bearer {self.access_token}'})
+            if 'request_type' in player_data:
+                if player_data['request_type'] == 'PUT':
+                    player_data.pop('request_type')
+                    response = self._session.put(player_url, headers=headers, data=json.dumps(player_data))
+                    if response.status_code != 200:
+                        try:
+                            response.json()
+                            raise RequestException(f'Command failed: {response.json()}')
+                        except json.decoder.JSONDecodeError:
+                            pass
+            else:
+                response = self._session.post(player_url, headers=headers, data=json.dumps(player_data))
+                if response.status_code != 200:
+                    try:
+                        response.json()
+                        raise RequestException(f'Command failed: {response.json()}')
+                    except json.decoder.JSONDecodeError:
+                        pass
