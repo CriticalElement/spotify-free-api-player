@@ -153,7 +153,3 @@ class SpotifyPlayer:
         response = self._session.post(player_url, headers=headers, data=json.dumps(player_data))
         if response.status_code != 200:
             raise RequestException(f'Command failed: {response.json()}')
-
-
-spotifyplayer = SpotifyPlayer()
-spotifyplayer.command(spotifyplayer.add_to_queue('5wilF6g0r4VpNqQsV8fWKr'))
