@@ -10,3 +10,4 @@ Possible fix: Create another fake device with the right cookies using selenium, 
 
 # Other:
 This project woudn't be possible without the Chrome Dev Console, and the npm package sactivity.
+This is also still in development.
