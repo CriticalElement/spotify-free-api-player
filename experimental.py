@@ -86,7 +86,7 @@ class SpotifyPlayer:
                     if json.loads(recv).get('headers'):
                         if json.loads(recv)['headers'].get('Spotify-Connection-Id'):
                             self.connection_id = json.loads(recv)['headers']['Spotify-Connection-Id']
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(30) # TODO: Fix this garbage
                     await ws.send('{"type": "ping"}')
 
         Thread(target=lambda: asyncio.new_event_loop().run_until_complete(websocket())).start()
