@@ -11,6 +11,8 @@ import time
 from threading import Thread
 from requests.exceptions import RequestException
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)-8s - %(name)-14s - %(message)s')
+
 
 class SpotifyPlayer:
     pause = {'command': {'endpoint': 'pause'}}
@@ -74,7 +76,6 @@ class SpotifyPlayer:
             random.shuffle(queue)
         queuequeue = [track for track in self.queue if track['provider'] != 'context']
         queue = queuequeue + queue
-        print(queue)
         if ids:
             return {'command': {'next_tracks': queue, 'queue_revision': self.queue_revision, 'endpoint': 'set_queue'}}
 
@@ -88,7 +89,6 @@ class SpotifyPlayer:
         if self.shuffling:
             random.shuffle(queue)
         queue = queue + self.queue
-        print(queue)
         if ids:
             return [{'command': {'next_tracks': queue[1:], 'queue_revision': self.queue_revision,
                                  'endpoint': 'set_queue'}},
@@ -105,7 +105,6 @@ class SpotifyPlayer:
                  for uri in uris]
         queuequeue = [track for track in self.queue if track['provider'] != 'context']
         queue = queuequeue + queue
-        print(queue)
         return {'command': {'next_tracks': queue, 'queue_revision': self.queue_revision,
                             'endpoint': 'set_queue'}}
 
@@ -196,27 +195,30 @@ class SpotifyPlayer:
         self.queue_revision = None
 
         async def websocket():
-            async with websockets.connect(guc_url, extra_headers=guc_headers) as ws:
-                Thread(target=lambda: start_ping_loop(ws)).start()
-                while True:
-                    recv = await ws.recv()
-                    load = json.loads(recv)
-                    # pprint(load, indent=4)
-                    if load.get('headers'):
-                        if load['headers'].get('Spotify-Connection-Id'):
-                            self.connection_id = load['headers']['Spotify-Connection-Id']
-                    if load.get('payloads'):
-                        try:
-                            if load['payloads'][0].get('cluster'):
-                                try:
-                                    self.queue = load['payloads'][0]['cluster']['player_state']['next_tracks']
-                                except KeyError:
-                                    pass
-                                self.queue_revision = load['payloads'][0]['cluster']['player_state']['queue_revision']
-                                self.shuffling = (load['payloads'][0]['cluster']['player_state']['options']
-                                                  ['shuffling_context'])
-                        except AttributeError:
-                            pass
+            try:
+                async with websockets.connect(guc_url, extra_headers=guc_headers) as ws:
+                    Thread(target=lambda: start_ping_loop(ws)).start()
+                    while True:
+                        recv = await ws.recv()
+                        load = json.loads(recv)
+                        if load.get('headers'):
+                            if load['headers'].get('Spotify-Connection-Id'):
+                                self.connection_id = load['headers']['Spotify-Connection-Id']
+                        if load.get('payloads'):
+                            try:
+                                if load['payloads'][0].get('cluster'):
+                                    try:
+                                        self.queue = load['payloads'][0]['cluster']['player_state']['next_tracks']
+                                    except KeyError:
+                                        pass
+                                    self.queue_revision = (load['payloads'][0]['cluster']['player_state']
+                                                           ['queue_revision'])
+                                    self.shuffling = (load['payloads'][0]['cluster']['player_state']['options']
+                                                      ['shuffling_context'])
+                            except AttributeError:
+                                pass
+            except Exception as exe:
+                logging.error(exe, exc_info=True)
 
         def start_ping_loop(ws):
             asyncio.new_event_loop().run_until_complete(ping_loop(ws))
@@ -292,8 +294,7 @@ class SpotifyPlayer:
         except json.decoder.JSONDecodeError:
             currently_playing_device = self._session.get('https://api.spotify.com/v1/me/player/devices',
                                                          headers=headers).json()['devices'][0]['id']
-            response = self.transfer(currently_playing_device)
-            print(response.json())
+            self.transfer(currently_playing_device)
             time.sleep(1)
             currently_playing_device = self._session.get('https://api.spotify.com/v1/me/player', headers=headers)
             currently_playing_device = currently_playing_device.json()['device']['id']
