@@ -6,11 +6,10 @@ import json
 import logging
 import string
 import random
+import time
 
 from threading import Thread
 from requests.exceptions import RequestException
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)-8s - %(name)-14s - %(message)s')
 
 
 class SpotifyPlayer:
@@ -18,16 +17,22 @@ class SpotifyPlayer:
     resume = {'command': {'endpoint': 'resume'}}
     skip = {'command': {'endpoint': 'skip_next'}}
     previous = {'command': {'endpoint': 'skip_prev'}}
-    shuffle = {'command': {'value': True, 'endpoint': 'set_shuffling_context'}}
-    stop_shuffle = {'command': {'value': False, 'endpoint': 'set_shuffling_context'}}
     repeating_context = {'command': {'repeating_context': True, 'repeating_track': False, 'endpoint': 'set_options'}}
     repeating_track = {'command': {'repeating_context': True, 'repeating_track': True, 'endpoint': 'set_options'}}
     no_repeat = {'command': {'repeating_context': False, 'repeating_track': False, 'endpoint': 'set_options'}}
 
+    def shuffle(self):
+        self.shuffling = True
+        return {'command': {'value': True, 'endpoint': 'set_shuffling_context'}}
+
+    def stop_shuffle(self):
+        self.shuffling = False
+        return {'command': {'value': False, 'endpoint': 'set_shuffling_context'}}
+
     @staticmethod
     def volume(volume):
         return {'volume': volume * 65535 / 100, 'url': 'https://guc-spclient.spotify.com/connect-state/'
-                                                'v1/connect/volume/from/player/to/device',
+                                                       'v1/connect/volume/from/player/to/device',
                 'request_type': 'PUT'}
 
     @staticmethod
@@ -39,6 +44,15 @@ class SpotifyPlayer:
         return {'command': {'track': {'uri': f'spotify:track:{track_id}', 'metadata': {'is_queued': True},
                                       'provider': 'queue'}, 'endpoint': 'add_to_queue'}}
 
+    @staticmethod
+    def play(track_id):
+        return {"command": {"context": {"uri": f"spotify:track:{track_id}",
+                                        "url": f"context://spotify:track:{track_id}",
+                                        "metadata": {}}, "play_origin":
+                            {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
+                            {"license": "on-demand", "skip_to": {"track_index": 0}, "player_options_override": {}},
+                "endpoint": "play"}}
+
     def remove_from_queue(self, track_id):
         matches = ([index for index, track in enumerate(self.queue) if track_id in track['uri']
                     or 'spotify:ad:' in track['uri']])
@@ -46,16 +60,109 @@ class SpotifyPlayer:
         return {'command': {'next_tracks': self.queue, 'queue_revision': self.queue_revision, 'endpoint': 'set_queue'}}
 
     def clear_queue(self):
-        matches = ([index for index, track in enumerate(self.queue) if 'queue' == track['provider']
-                   or 'spotify:ad:' in track['uri']])
-        [self.queue.pop(index) for index in matches]
-        return {'command': {'next_tracks': self.queue, 'queue_revision': self.queue_revision, 'endpoint': 'set_queue'}}
+        matches = ([track for track in self.queue if 'queue' != track['provider']])
+        return {'command': {'next_tracks': matches, 'queue_revision': self.queue_revision, 'endpoint': 'set_queue'}}
 
-    @staticmethod
-    def play(track_id):
-        return [{'command': {'track': {'uri': f'spotify:track:{track_id}', 'metadata': {'is_queued': True},
-                                       'provider': 'queue'}, 'endpoint': 'add_to_queue'}},
-                {'command': {'endpoint': 'skip_next'}}]
+    def queue_playlist(self, playlist_id):
+        url = f'https://api.spotify.com/v1/playlists/{playlist_id}/tracks'
+        headers = {'Authorization': f'Bearer {self.access_token}'}
+        response = self._session.get(url, headers=headers)
+        ids = [item['track']['id'] for item in response.json()['items']]
+        queue = [{'uri': f'spotify:track:{track_id}', 'metadata': {'is_queued': True}, 'provider': 'queue'}
+                 for track_id in ids]
+        if self.shuffling:
+            random.shuffle(queue)
+        queuequeue = [track for track in self.queue if track['provider'] != 'context']
+        queue = queuequeue + queue
+        print(queue)
+        if ids:
+            return {'command': {'next_tracks': queue, 'queue_revision': self.queue_revision, 'endpoint': 'set_queue'}}
+
+    def play_playlist(self, playlist_id, skip_to=0):
+        url = f'https://api.spotify.com/v1/playlists/{playlist_id}/tracks'
+        headers = {'Authorization': f'Bearer {self.access_token}'}
+        response = self._session.get(url, headers=headers)
+        ids = [item['track']['id'] for item in response.json()['items']]
+        queue = [{'uri': f'spotify:track:{track_id}', 'metadata': {'is_queued': True}, 'provider': 'queue'}
+                 for track_id in ids]
+        if self.shuffling:
+            random.shuffle(queue)
+        queue = queue + self.queue
+        print(queue)
+        if ids:
+            return [{'command': {'next_tracks': queue[1:], 'queue_revision': self.queue_revision,
+                                 'endpoint': 'set_queue'}},
+                    {"command": {"context": {"uri": f"{queue[0]['uri']}",
+                                             "url": f"context://{queue[0]['uri']}",
+                                             "metadata": {}}, "play_origin":
+                                 {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
+                                 {"license": "on-demand", "skip_to": {"track_index": skip_to},
+                                  "player_options_override": {}},
+                     "endpoint": "play"}}]
+
+    def queue_from_uris(self, uris):
+        queue = [{'uri': uri, 'metadata': {'is_queued': True}, 'provider': 'queue'}
+                 for uri in uris]
+        queuequeue = [track for track in self.queue if track['provider'] != 'context']
+        queue = queuequeue + queue
+        print(queue)
+        return {'command': {'next_tracks': queue, 'queue_revision': self.queue_revision,
+                            'endpoint': 'set_queue'}}
+
+    def play_from_uris(self, uris):
+        queue = [{'uri': uri, 'metadata': {'is_queued': True}, 'provider': 'queue'}
+                 for uri in uris]
+        queue = queue + self.queue
+        return [{'command': {'next_tracks': queue[1:], 'queue_revision': self.queue_revision,
+                             'endpoint': 'set_queue'}},
+                {"command": {"context": {"uri": queue[0]['uri'],
+                                         "url": queue[0]['uri'],
+                                         "metadata": {}}, "play_origin":
+                             {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
+                             {"license": "on-demand", "skip_to": {"track_index": 0}, "player_options_override": {}},
+                 "endpoint": "play"}}]
+
+    def play_from_context(self, context_uri, skip_to=0):
+        oldqueue = [track for track in self.queue if track['provider'] == 'queue']
+        oldqueue = [{'uri': track['uri'], 'metadata': {'is_queued': True}, 'provider': 'queue'}
+                    for track in oldqueue]
+        self.command(self.clear_queue())
+        self.command({"command": {"context": {"uri": f"{context_uri}",
+                                              "url": f"context://{context_uri}",
+                                              "metadata": {}}, "play_origin":
+                                  {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
+                                  {"license": "on-demand", "skip_to": {"track_index": skip_to},
+                                  "player_options_override": {}},
+                      "endpoint": "play"}})
+        time.sleep(0.75)
+        context_songs = [track for track in self.queue if track['provider'] == 'context']
+        context_songs = [track for track in context_songs if track['metadata']['iteration'] == '0']
+        context_songs = [{'uri': track['uri'], 'metadata': {'is_queued': True}, 'provider': 'queue'}
+                         for track in context_songs]
+        queue = context_songs + oldqueue
+        return {'command': {'next_tracks': queue, 'queue_revision': self.queue_revision,
+                            'endpoint': 'set_queue'}}
+
+    def queue_from_context(self, context_uri, skip_to=0):
+        oldqueue = [track for track in self.queue if track['provider'] == 'queue']
+        oldqueue = [{'uri': track['uri'], 'metadata': {'is_queued': True}, 'provider': 'queue'}
+                    for track in oldqueue]
+        self.command(self.clear_queue())
+        self.command({"command": {"context": {"uri": f"{context_uri}",
+                                              "url": f"context://{context_uri}",
+                                              "metadata": {}}, "play_origin":
+                                  {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
+                                  {"license": "on-demand", "skip_to": {"track_index": skip_to},
+                                   "player_options_override": {}},
+                     "endpoint": "play"}})
+        time.sleep(0.75)
+        context_songs = [track for track in self.queue if track['provider'] == 'context']
+        context_songs = [track for track in context_songs if track['metadata']['iteration'] == '0']
+        context_songs = [{'uri': track['uri'], 'metadata': {'is_queued': True}, 'provider': 'queue'}
+                         for track in context_songs]
+        queue = context_songs + oldqueue
+        return {'command': {'next_tracks': queue, 'queue_revision': self.queue_revision,
+                            'endpoint': 'set_queue'}}
 
     def __init__(self):
         self.cj = browser_cookie3.chrome()
@@ -66,6 +173,7 @@ class SpotifyPlayer:
                                                '(KHTML, like Gecko) Chrome/87.0.4280.66 Safari/537.36'}
 
         self._session = requests.Session()
+        self.shuffling = False
         self._authorize()
 
     def _authorize(self):
@@ -93,13 +201,22 @@ class SpotifyPlayer:
                 while True:
                     recv = await ws.recv()
                     load = json.loads(recv)
+                    # pprint(load, indent=4)
                     if load.get('headers'):
                         if load['headers'].get('Spotify-Connection-Id'):
                             self.connection_id = load['headers']['Spotify-Connection-Id']
                     if load.get('payloads'):
-                        if load['payloads'][0].get('cluster'):
-                            self.queue = load['payloads'][0]['cluster']['player_state']['next_tracks']
-                            self.queue_revision = load['payloads'][0]['cluster']['player_state']['queue_revision']
+                        try:
+                            if load['payloads'][0].get('cluster'):
+                                try:
+                                    self.queue = load['payloads'][0]['cluster']['player_state']['next_tracks']
+                                except KeyError:
+                                    pass
+                                self.queue_revision = load['payloads'][0]['cluster']['player_state']['queue_revision']
+                                self.shuffling = (load['payloads'][0]['cluster']['player_state']['options']
+                                                  ['shuffling_context'])
+                        except AttributeError:
+                            pass
 
         def start_ping_loop(ws):
             asyncio.new_event_loop().run_until_complete(ping_loop(ws))
@@ -116,21 +233,22 @@ class SpotifyPlayer:
         while True:
             if self.connection_id:
                 device_data = {"device": {"brand": "spotify", "capabilities":
-                                          {"change_volume": True, "enable_play_token": True,
-                                           "supports_file_media_type": True,
-                                           "play_token_lost_behavior": "pause",
-                                           "disable_connect": True, "audio_podcasts": True,
-                                           "video_playback": True,
-                                           "manifest_formats": ["file_urls_mp3",
-                                                                "manifest_ids_video",
-                                                                "file_urls_external",
-                                                                "file_ids_mp4",
-                                                                "file_ids_mp4_dual"]},
-                                          "device_id": self.device_id, "device_type": "computer",
-                                          "metadata": {}, "model": "web_player", "name": "Spotify Player",
-                                          "platform_identifier": "web_player windows 10;chrome 87.0.4280.66;desktop"},
-                               "connection_id": self.connection_id, "client_version": "harmony:4.11.0-af0ef98",
-                               "volume": 65535}
+                               {"change_volume": True, "enable_play_token": True,
+                                "supports_file_media_type": True,
+                                "play_token_lost_behavior": "pause",
+                                "disable_connect": True, "audio_podcasts": True,
+                                "video_playback": True,
+                                "manifest_formats": ["file_urls_mp3",
+                                                     "manifest_ids_video",
+                                                     "file_urls_external",
+                                                     "file_ids_mp4",
+                                                     "file_ids_mp4_dual"]},
+                              "device_id": self.device_id, "device_type": "computer",
+                              "metadata": {}, "model": "web_player", "name": "Spotify Player",
+                              "platform_identifier": "web_player windows 10;chrome 87.0.4280.66;desktop"},
+                                           "connection_id": self.connection_id, "client_version":
+                                           "harmony:4.11.0-af0ef98",
+                                           "volume": 65535}
                 break
 
         device_headers = self._default_headers.copy()
@@ -155,6 +273,16 @@ class SpotifyPlayer:
         response = self._session.put(hobs_url, headers=hobs_headers, data=json.dumps(hobs_data))
         self.queue = response.json()['player_state']['next_tracks']
         self.queue_revision = response.json()['player_state']['queue_revision']
+        self.shuffling = response.json()['player_state']['options']['shuffling_context']
+
+    def transfer(self, device_id):
+        transfer_url = f'https://guc-spclient.spotify.com/connect-state/v1/connect/transfer/from/' \
+                       f'{self.device_id}/to/{device_id}'
+        transfer_headers = self._default_headers.copy()
+        transfer_headers.update({'authorization': f'Bearer {self.access_token}'})
+        transfer_data = {'transfer_options': {'restore_paused': 'restore'}}
+        response = self._session.post(transfer_url, headers=transfer_headers, data=json.dumps(transfer_data))
+        return response
 
     def command(self, command_dict):
         headers = {'Authorization': f'Bearer {self.access_token}'}
@@ -164,7 +292,11 @@ class SpotifyPlayer:
         except json.decoder.JSONDecodeError:
             currently_playing_device = self._session.get('https://api.spotify.com/v1/me/player/devices',
                                                          headers=headers).json()['devices'][0]['id']
-            # There are still some bugs
+            response = self.transfer(currently_playing_device)
+            print(response.json())
+            time.sleep(1)
+            currently_playing_device = self._session.get('https://api.spotify.com/v1/me/player', headers=headers)
+            currently_playing_device = currently_playing_device.json()['device']['id']
         player_url = f'https://guc-spclient.spotify.com/connect-state/v1/player/command/from/{self.device_id}' \
                      f'/to/{currently_playing_device}'
         if isinstance(command_dict, list):
@@ -207,3 +339,4 @@ class SpotifyPlayer:
                         pass
                 else:
                     logging.log(logging.INFO, 'Command executed successfully.')
+        time.sleep(0.5)
