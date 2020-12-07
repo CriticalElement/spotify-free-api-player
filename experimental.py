@@ -11,8 +11,6 @@ import time
 from threading import Thread
 from requests.exceptions import RequestException
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)-8s - %(name)-14s - %(message)s')
-
 
 class SpotifyPlayer:
     pause = {'command': {'endpoint': 'pause'}}
