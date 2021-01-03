@@ -7,6 +7,7 @@ import logging
 import string
 import random
 import time
+import typing
 
 from threading import Thread
 from requests.exceptions import RequestException
@@ -20,14 +21,8 @@ class SpotifyPlayer:
     repeating_context = {'command': {'repeating_context': True, 'repeating_track': False, 'endpoint': 'set_options'}}
     repeating_track = {'command': {'repeating_context': True, 'repeating_track': True, 'endpoint': 'set_options'}}
     no_repeat = {'command': {'repeating_context': False, 'repeating_track': False, 'endpoint': 'set_options'}}
-
-    def shuffle(self):
-        self.shuffling = True
-        return {'command': {'value': True, 'endpoint': 'set_shuffling_context'}}
-
-    def stop_shuffle(self):
-        self.shuffling = False
-        return {'command': {'value': False, 'endpoint': 'set_shuffling_context'}}
+    shuffle = {'command': {'value': True, 'endpoint': 'set_shuffling_context'}}
+    stop_shuffle = {'command': {'value': False, 'endpoint': 'set_shuffling_context'}}
 
     @staticmethod
     def volume(volume):
@@ -161,10 +156,13 @@ class SpotifyPlayer:
         return {'command': {'next_tracks': queue, 'queue_revision': self.queue_revision,
                             'endpoint': 'set_queue'}}
 
-    def __init__(self):
+    def __init__(self, event_reciever: typing.List[typing.Callable] = None):
+        if event_reciever is None:
+            event_reciever = [lambda: None]
         self.isinitialized = False
         try:
             self.cj = browser_cookie3.chrome()
+            # noinspection PyProtectedMember
             _ = self.cj._cookies['.spotify.com']['/']['sp_t']
             self.isinitialized = True
         except Exception as e:
@@ -176,7 +174,17 @@ class SpotifyPlayer:
                                                '(KHTML, like Gecko) Chrome/87.0.4280.66 Safari/537.36'}
 
         self._session = requests.Session()
+        self.event_reciever = event_reciever
         self.shuffling = False
+        self.looping = False
+        self.playing = False
+        self.current_volume = 65535
+        self.timestamp = 0
+        self._last_timestamp = 0
+        self.position_ms = 0
+        self._last_position = 0
+        self.last_command = None
+        self.time_executed = 0
         self.ping = False
         self.running_pings = False
         self.event_loop = None
@@ -195,7 +203,7 @@ class SpotifyPlayer:
         response = self._session.get(access_token_url, headers=access_token_headers, cookies=self.cj)
         access_token_response = response.json()
         self.access_token = access_token_response['accessToken']
-        self.access_token_expire = access_token_response['accessTokenExpirationTimestampMs']
+        self.access_token_expire = access_token_response['accessTokenExpirationTimestampMs'] / 1000 + time.time()
 
         guc_url = f'wss://guc-dealer.spotify.com/?access_token={self.access_token}'
         guc_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)'
@@ -227,8 +235,39 @@ class SpotifyPlayer:
                                         pass
                                     self.queue_revision = (load['payloads'][0]['cluster']['player_state']
                                                            ['queue_revision'])
-                                    self.shuffling = (load['payloads'][0]['cluster']['player_state']['options']
-                                                      ['shuffling_context'])
+                                    options = load['payloads'][0]['cluster']['player_state']['options']
+                                    try:
+                                        active_device = load['payloads'][0]['cluster']['active_device_id']
+                                        self.current_volume = (load['payloads'][0]['cluster']['devices'][active_device]
+                                                               ['volume'])
+                                    except KeyError:
+                                        pass
+                                    self.playing = not load['payloads'][0]['cluster']['player_state']['is_paused']
+                                    self.shuffling = options['shuffling_context']
+                                    self._last_timestamp = self.timestamp
+                                    self.timestamp = int(load['payloads'][0]['cluster']['player_state']['timestamp'])
+                                    self._last_position = self.position_ms
+                                    position_ms = int(load['payloads'][0]['cluster']['player_state']
+                                                      ['position_as_of_timestamp'])
+
+                                    time_executed = time.time()
+                                    if time_executed - self.time_executed < 0.7:
+                                        if self.last_command.get('command'):
+                                            whitelist = ['seek_to', 'play', 'skip_next', 'skip_prev']
+                                            if self.last_command['command']['endpoint'] not in whitelist:
+                                                if abs(position_ms - self._last_position) > 500:
+                                                    self.position_ms = self._last_position
+                                            else:
+                                                self.position_ms = position_ms
+                                    else:
+                                        self.position_ms = position_ms
+                                    if options['repeating_track']:
+                                        self.looping = 'track'
+                                    elif options['repeating_context']:
+                                        self.looping = 'context'
+                                    else:
+                                        self.looping = 'off'
+                                    [event() for event in self.event_reciever]
                             except AttributeError:
                                 pass
                     except websockets.exceptions.ConnectionClosedError as exc:
@@ -303,8 +342,57 @@ class SpotifyPlayer:
             self.queue = response.json()['player_state']['next_tracks']
         except KeyError:
             self.queue = []
-        self.queue_revision = response.json()['player_state']['queue_revision']
-        self.shuffling = response.json()['player_state']['options']['shuffling_context']
+        response_load = response.json()
+        response_options = response_load['player_state']['options']
+        try:
+            active_device_id = response_load['active_device_id']
+            self.current_volume = response_load['devices'][active_device_id]['volume']
+        except KeyError:
+            pass
+        self.queue_revision = response_load['player_state']['queue_revision']
+        self.shuffling = response_options['shuffling_context']
+        self.playing = not response_load['player_state']['is_paused']
+        self._last_position = int(response_load['player_state']['position_as_of_timestamp'])
+        self._last_timestamp = int(response_load['player_state']['timestamp'])
+        self.timestamp = int(response_load['player_state']['timestamp'])
+        self.position_ms = int(response_load['player_state']['position_as_of_timestamp'])
+        if response_options['repeating_track']:
+            self.looping = 'track'
+        elif response_options['repeating_context']:
+            self.looping = 'context'
+        else:
+            self.looping = 'off'
+
+        def progress_loop():
+
+            def recalibrate():
+                while True:
+                    time.sleep(1)
+                    recalibrate_response = self._session.get('https://api.spotify.com/v1/me/player/currently-playing',
+                                                             headers={'Authorization': f'Bearer {self.access_token}'})
+                    if recalibrate_response.status_code == 200:
+                        self.position_ms = recalibrate_response.json()['progress_ms']
+
+            Thread(target=recalibrate).start()
+
+            while True:
+                time.sleep(0.5)
+                if self.playing:
+                    self._last_timestamp = self.timestamp
+                    self.timestamp = self.timestamp + 500
+                    self._last_position = self.position_ms
+                    diff = self.timestamp / 1000 - self._last_timestamp / 1000
+                    self.position_ms = self._last_position / 1000 + diff
+                    self.position_ms = self.position_ms * 1000
+                else:
+                    self._last_timestamp = self.timestamp
+                    self._last_position = self.position_ms
+                    diff = self.timestamp / 1000 - self._last_timestamp / 1000
+                    self.position_ms = self._last_position / 1000 + diff
+                    self.position_ms = self.position_ms * 1000
+
+        if self.queue:
+            Thread(target=progress_loop).start()
 
     def transfer(self, device_id):
         if self.access_token_expire < time.time():
@@ -318,6 +406,15 @@ class SpotifyPlayer:
         transfer_data = {'transfer_options': {'restore_paused': 'restore'}}
         response = self._session.post(transfer_url, headers=transfer_headers, data=json.dumps(transfer_data))
         return response
+
+    def add_event_reciever(self, event_reciever: typing.Callable):
+        self.event_reciever.append(event_reciever)
+
+    def remove_event_reciever(self, event_reciever: typing.Callable):
+        if event_reciever in self.event_reciever:
+            self.event_reciever.pop(self.event_reciever.index(event_reciever))
+        else:
+            raise TypeError('The specified event reciever was not in the list of event recievers.')
 
     def command(self, command_dict):
         if self.access_token_expire < time.time():
@@ -335,6 +432,8 @@ class SpotifyPlayer:
             time.sleep(1)
             currently_playing_device = self._session.get('https://api.spotify.com/v1/me/player', headers=headers)
             currently_playing_device = currently_playing_device.json()['device']['id']
+        except requests.exceptions.RequestException:
+            self._authorize()
         player_url = f'https://guc-spclient.spotify.com/connect-state/v1/player/command/from/{self.device_id}' \
                      f'/to/{currently_playing_device}'
         if isinstance(command_dict, list):
@@ -346,7 +445,7 @@ class SpotifyPlayer:
                 if response.status_code != 200:
                     raise RequestException(f'Command failed: {response.json()}')
                 else:
-                    logging.log(logging.INFO, 'Command executed successfully.')
+                    logging.log(logging.INFO, f'Command executed successfully. {player_data}')
         else:
             if 'url' in command_dict:
                 player_url = command_dict['url'].replace('player', self.device_id).replace('device',
@@ -361,12 +460,13 @@ class SpotifyPlayer:
                     response = self._session.put(player_url, headers=headers, data=json.dumps(player_data))
                     if response.status_code != 200:
                         try:
-                            response.json()
                             raise RequestException(f'Command failed: {response.json()}')
                         except json.decoder.JSONDecodeError:
-                            pass
+                            raise RequestException(f'Command failed.')
                     else:
-                        logging.log(logging.INFO, 'Command executed successfully.')
+                        logging.log(logging.INFO, f'Command executed successfully. {player_data}')
+                        self.time_executed = time.time()
+                        self.last_command = player_data
             else:
                 response = self._session.post(player_url, headers=headers, data=json.dumps(player_data))
                 if response.status_code != 200:
@@ -374,7 +474,9 @@ class SpotifyPlayer:
                         response.json()
                         raise RequestException(f'Command failed: {response.json()}')
                     except json.decoder.JSONDecodeError:
-                        pass
+                        raise RequestException(f'Command failed.')
                 else:
-                    logging.log(logging.INFO, 'Command executed successfully.')
+                    logging.log(logging.INFO, f'Command executed successfully. {player_data}')
+                    self.time_executed = time.time()
+                    self.last_command = player_data
         time.sleep(0.5)
