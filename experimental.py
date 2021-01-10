@@ -179,9 +179,7 @@ class SpotifyPlayer:
         self.looping = False
         self.playing = False
         self.current_volume = 65535
-        self.timestamp = 0
         self._last_timestamp = 0
-        self.position_ms = 0
         self._last_position = 0
         self.last_command = None
         self.time_executed = 0
@@ -244,23 +242,12 @@ class SpotifyPlayer:
                                         pass
                                     self.playing = not load['payloads'][0]['cluster']['player_state']['is_paused']
                                     self.shuffling = options['shuffling_context']
-                                    self._last_timestamp = self.timestamp
-                                    self.timestamp = int(load['payloads'][0]['cluster']['player_state']['timestamp'])
-                                    self._last_position = self.position_ms
+                                    self._last_timestamp = int(load['payloads'][0]['cluster']['player_state']
+                                                               ['timestamp'])
                                     position_ms = int(load['payloads'][0]['cluster']['player_state']
                                                       ['position_as_of_timestamp'])
-
-                                    time_executed = time.time()
-                                    if time_executed - self.time_executed < 0.7:
-                                        if self.last_command.get('command'):
-                                            whitelist = ['seek_to', 'play', 'skip_next', 'skip_prev']
-                                            if self.last_command['command']['endpoint'] not in whitelist:
-                                                if abs(position_ms - self._last_position) > 500:
-                                                    self.position_ms = self._last_position
-                                            else:
-                                                self.position_ms = position_ms
-                                    else:
-                                        self.position_ms = position_ms
+                                    if position_ms != self._last_position:
+                                        self._last_position = position_ms
                                     if options['repeating_track']:
                                         self.looping = 'track'
                                     elif options['repeating_context']:
@@ -273,6 +260,7 @@ class SpotifyPlayer:
                     except websockets.exceptions.ConnectionClosedError as exc:
                         logging.error(exc, exc_info=False)
                         self.isinitialized = False
+                        self._authorize()
                         break
 
         def start_ping_loop():
@@ -354,8 +342,6 @@ class SpotifyPlayer:
         self.playing = not response_load['player_state']['is_paused']
         self._last_position = int(response_load['player_state']['position_as_of_timestamp'])
         self._last_timestamp = int(response_load['player_state']['timestamp'])
-        self.timestamp = int(response_load['player_state']['timestamp'])
-        self.position_ms = int(response_load['player_state']['position_as_of_timestamp'])
         if response_options['repeating_track']:
             self.looping = 'track'
         elif response_options['repeating_context']:
@@ -363,36 +349,11 @@ class SpotifyPlayer:
         else:
             self.looping = 'off'
 
-        def progress_loop():
-
-            def recalibrate():
-                while True:
-                    time.sleep(1)
-                    recalibrate_response = self._session.get('https://api.spotify.com/v1/me/player/currently-playing',
-                                                             headers={'Authorization': f'Bearer {self.access_token}'})
-                    if recalibrate_response.status_code == 200:
-                        self.position_ms = recalibrate_response.json()['progress_ms']
-
-            Thread(target=recalibrate).start()
-
-            while True:
-                time.sleep(0.5)
-                if self.playing:
-                    self._last_timestamp = self.timestamp
-                    self.timestamp = self.timestamp + 500
-                    self._last_position = self.position_ms
-                    diff = self.timestamp / 1000 - self._last_timestamp / 1000
-                    self.position_ms = self._last_position / 1000 + diff
-                    self.position_ms = self.position_ms * 1000
-                else:
-                    self._last_timestamp = self.timestamp
-                    self._last_position = self.position_ms
-                    diff = self.timestamp / 1000 - self._last_timestamp / 1000
-                    self.position_ms = self._last_position / 1000 + diff
-                    self.position_ms = self.position_ms * 1000
-
-        if self.queue:
-            Thread(target=progress_loop).start()
+    def get_position(self):
+        if not self.playing:
+            return self._last_position / 1000
+        diff = time.time() - self._last_timestamp / 1000
+        return self._last_position / 1000 + diff
 
     def transfer(self, device_id):
         if self.access_token_expire < time.time():
