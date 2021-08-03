@@ -5,3 +5,5 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)-8s - 
 
 spotifyplayer = SpotifyPlayer()
 spotifyplayer.command(spotifyplayer.play('5wilF6g0r4VpNqQsV8fWKr'))
+
+spotifyplayer.disconnect()
