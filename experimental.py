@@ -159,17 +159,25 @@ class SpotifyPlayer:
         return {'command': {'next_tracks': queue, 'queue_revision': self.queue_revision,
                             'endpoint': 'set_queue'}}
 
-    def __init__(self, event_reciever: typing.List[typing.Callable] = None):
+    def __init__(self, event_reciever: typing.List[typing.Callable] = None, cookie_str: str = None,
+                 cookie_path: str = None):
+        self.isinitialized = False
         if event_reciever is None:
             event_reciever = [lambda: None]
-        self.isinitialized = False
-        try:
-            self.cj = browser_cookie3.chrome()
-            # noinspection PyProtectedMember
-            _ = self.cj._cookies['.spotify.com']['/']['sp_t']
+        if cookie_str:
             self.isinitialized = True
-        except Exception as e:
-            logger.error(e, exc_info=True)
+        if cookie_path:
+            self.isinitialized = True
+        self.cookie_path = cookie_path
+        self.cookie_str = cookie_str
+        if not self.isinitialized:
+            try:
+                self.cj = browser_cookie3.chrome()
+                # noinspection PyProtectedMember
+                _ = self.cj._cookies['.spotify.com']['/']['sp_t']
+                self.isinitialized = True
+            except Exception as e:
+                logger.error(e, exc_info=True)
         self._default_headers = {'sec-fetch-dest': 'empty',
                                  'sec-fetch-mode': 'cors',
                                  'sec-fetch-site': 'same-origin',
@@ -181,6 +189,7 @@ class SpotifyPlayer:
         self.shuffling = False
         self.looping = False
         self.playing = False
+        self.force_disconnect = False
         self.active_device_id = ''
         self.current_volume = 65535
         self._last_timestamp = 0
@@ -197,13 +206,18 @@ class SpotifyPlayer:
             self.isinitialized = False
         access_token_headers = self._default_headers.copy()
         access_token_headers.update({'spotify-app-version': '1.1.48.530.g38509c6c'})
-
         access_token_url = 'https://open.spotify.com/get_access_token?reason=transport&productType=web_player'
-        self._session = requests.Session()
-        response = self._session.get(access_token_url, headers=access_token_headers, cookies=self.cj)
+        if self.cookie_path:
+            with open(self.cookie_path, 'r') as f:
+                self.cookie_str = f.read()
+        if self.cookie_str:
+            access_token_headers.update({'cookie': self.cookie_str})
+            response = self._session.get(access_token_url, headers=access_token_headers)
+        else:
+            response = self._session.get(access_token_url, headers=access_token_headers, cookies=self.cj)
         access_token_response = response.json()
         self.access_token = access_token_response['accessToken']
-        self.access_token_expire = access_token_response['accessTokenExpirationTimestampMs'] / 1000 + time.time()
+        self.access_token_expire = access_token_response['accessTokenExpirationTimestampMs'] / 1000
 
         guc_url = f'wss://guc-dealer.spotify.com/?access_token={self.access_token}'
         guc_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)'
@@ -287,7 +301,8 @@ class SpotifyPlayer:
             self.tasks.append(asyncio.create_task(ping_loop()))
             await asyncio.gather(*self.tasks, return_exceptions=True)
 
-            self._authorize()
+            if not self.force_disconnect:
+                self._authorize()
 
         self.sleep_task_event_loop = None
         self.websocket_task_event_loop = None
@@ -393,9 +408,14 @@ class SpotifyPlayer:
 
     def create_api_request(self, path, request_type='GET'):
         if request_type.upper() in ['GET', 'PUT', 'DELETE', 'POST', 'PATCH', 'HEAD']:
-            return getattr(self._session, request_type.lower())('https://api.spotify.com/v1' + path,
-                                                                headers={'Authorization': f'Bearer'
-                                                                                          f' {self.access_token}'})
+            try:
+                return getattr(self._session, request_type.lower())('https://api.spotify.com/v1' + path,
+                                                                    headers={'Authorization': f'Bearer'
+                                                                                              f' {self.access_token}'})
+            except RequestException:
+                return getattr(self._session, request_type.lower())('https://api.spotify.com/v1' + path,
+                                                                    headers={'Authorization': f'Bearer'
+                                                                                              f' {self.access_token}'})
 
     def _cancel_tasks(self):
         print(self.tasks)
@@ -403,6 +423,7 @@ class SpotifyPlayer:
         [task.cancel() for task in self.tasks]
 
     def disconnect(self):
+        self.force_disconnect = True
         self.websocket_task_event_loop.create_task(self.ws.close())
 
     def command(self, command_dict):
@@ -414,7 +435,8 @@ class SpotifyPlayer:
         if self.active_device_id:
             currently_playing_device = self.active_device_id
         else:
-            currently_playing_device = self._session.get('https://api.spotify.com/v1/me/player', headers=headers)
+            currently_playing_device = self._session.get('https://api.spotify.com/v1/me/player',
+                                                         headers=headers)
             try:
                 currently_playing_device = currently_playing_device.json()['device']['id']
             except json.decoder.JSONDecodeError or KeyError:
