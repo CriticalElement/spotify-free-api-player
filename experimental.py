@@ -219,7 +219,7 @@ class SpotifyPlayer:
         self.access_token = access_token_response['accessToken']
         self.access_token_expire = access_token_response['accessTokenExpirationTimestampMs'] / 1000
 
-        guc_url = f'wss://guc-dealer.spotify.com/?access_token={self.access_token}'
+        guc_url = f'wss://guc3-dealer.spotify.com/?access_token={self.access_token}'
         guc_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)'
                                      ' Chrome/87.0.4280.66 Safari/537.36'}
 
