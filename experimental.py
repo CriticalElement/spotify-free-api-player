@@ -47,8 +47,8 @@ class SpotifyPlayer:
         return {"command": {"context": {"uri": f"spotify:track:{track_id}",
                                         "url": f"context://spotify:track:{track_id}",
                                         "metadata": {}}, "play_origin":
-                            {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
-                            {"license": "on-demand", "skip_to": {"track_index": 0}, "player_options_override": {}},
+                                {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
+                                {"license": "on-demand", "skip_to": {"track_index": 0}, "player_options_override": {}},
                             "endpoint": "play"}}
 
     def remove_from_queue(self, track_id):
@@ -91,9 +91,9 @@ class SpotifyPlayer:
                     {"command": {"context": {"uri": f"{queue[0]['uri']}",
                                              "url": f"context://{queue[0]['uri']}",
                                              "metadata": {}}, "play_origin":
-                                 {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
-                                 {"license": "on-demand", "skip_to": {"track_index": skip_to},
-                                  "player_options_override": {}},
+                                     {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
+                                     {"license": "on-demand", "skip_to": {"track_index": skip_to},
+                                      "player_options_override": {}},
                                  "endpoint": "play"}}]
 
     def queue_from_uris(self, uris):
@@ -113,8 +113,8 @@ class SpotifyPlayer:
                 {"command": {"context": {"uri": queue[0]['uri'],
                                          "url": f'context://{queue[0]["uri"]}',
                                          "metadata": {}}, "play_origin":
-                             {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
-                             {"license": "on-demand", "skip_to": {"track_index": 0}, "player_options_override": {}},
+                                 {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
+                                 {"license": "on-demand", "skip_to": {"track_index": 0}, "player_options_override": {}},
                              "endpoint": "play"}}]
 
     def play_from_context(self, context_uri, skip_to=0):
@@ -125,9 +125,9 @@ class SpotifyPlayer:
         self.command({"command": {"context": {"uri": f"{context_uri}",
                                               "url": f"context://{context_uri}",
                                               "metadata": {}}, "play_origin":
-                                  {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
-                                  {"license": "on-demand", "skip_to": {"track_index": skip_to},
-                                   "player_options_override": {}},
+                                      {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
+                                      {"license": "on-demand", "skip_to": {"track_index": skip_to},
+                                       "player_options_override": {}},
                                   "endpoint": "play"}})
         time.sleep(0.75)
         context_songs = [track for track in self.queue if track['provider'] == 'context']
@@ -146,9 +146,9 @@ class SpotifyPlayer:
         self.command({"command": {"context": {"uri": f"{context_uri}",
                                               "url": f"context://{context_uri}",
                                               "metadata": {}}, "play_origin":
-                                  {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
-                                  {"license": "on-demand", "skip_to": {"track_index": skip_to},
-                                   "player_options_override": {}},
+                                      {"feature_identifier": "harmony", "feature_version": "4.11.0-af0ef98"}, "options":
+                                      {"license": "on-demand", "skip_to": {"track_index": skip_to},
+                                       "player_options_override": {}},
                                   "endpoint": "play"}})
         time.sleep(0.75)
         context_songs = [track for track in self.queue if track['provider'] == 'context']
@@ -196,7 +196,9 @@ class SpotifyPlayer:
         self._last_position = 0
         self.last_command = None
         self.time_executed = 0
+        self.diff = 0
         self.ws = None
+        self.disconnected = False
         if self.isinitialized:
             self.isinitialized = False
             self._authorize()
@@ -252,12 +254,12 @@ class SpotifyPlayer:
                                     except KeyError:
                                         pass
                                     self.queue_revision = (load['payloads'][0]['cluster']['player_state']
-                                                           ['queue_revision'])
+                                    ['queue_revision'])
                                     options = load['payloads'][0]['cluster']['player_state']['options']
                                     try:
                                         active_device = load['payloads'][0]['cluster']['active_device_id']
                                         self.current_volume = (load['payloads'][0]['cluster']['devices'][active_device]
-                                                               ['volume'])
+                                        ['volume'])
                                         self.active_device_id = active_device
                                     except KeyError:
                                         self.active_device_id = ''
@@ -266,8 +268,11 @@ class SpotifyPlayer:
                                     try:
                                         self._last_timestamp = int(load['payloads'][0]['cluster']['player_state']
                                                                    ['timestamp'])
+                                        timediff = int(load['payloads'][0]['cluster']['server_timestamp_ms'])
+                                        self._timestamp_diff = time.time() - timediff / 1000
                                     except KeyError:
                                         self._last_timestamp = 0
+                                        self._timestamp_diff = 0
                                     position_ms = int(load['payloads'][0]['cluster']['player_state']
                                                       ['position_as_of_timestamp'])
                                     if position_ms != self._last_position:
@@ -278,10 +283,15 @@ class SpotifyPlayer:
                                         self.looping = 'context'
                                     else:
                                         self.looping = 'off'
-                                    [event() for event in self.event_reciever]
+                                    for ev in self.event_reciever:
+                                        try:
+                                            ev()
+                                        except Exception as e:
+                                            logger.error('An exception occured while executing an event listener: ',
+                                                         exc_info=e)
                             except AttributeError:
                                 pass
-                    except websockets.exceptions.ConnectionClosed:
+                    except websockets.ConnectionClosed:
                         return
 
         async def ping_loop():
@@ -302,7 +312,43 @@ class SpotifyPlayer:
             await asyncio.gather(*self.tasks, return_exceptions=True)
 
             if not self.force_disconnect:
-                self._authorize()
+                event_recievers = self.event_reciever.copy()
+                self.event_reciever.clear()
+                self.active_device_id = ''
+                self.current_volume = 65535
+                self._last_timestamp = 0
+                self._last_position = 0
+                self.last_command = None
+                self.time_executed = 0
+                self.diff = 0
+                self.ws = None
+                self.isinitialized = False
+                self.disconnected = True
+                logger.error('The SpotifyPlayer was disconnected')
+                for ev in event_recievers:
+                    try:
+                        ev()
+                    except Exception as e:
+                        logger.error('An exception occured while executing an event listener: ', exc_info=e)
+                while not self.isinitialized:
+                    try:
+                        self._authorize()
+                        logger.info('The SpotifyPlayer reconnected successfully')
+                        self.disconnected = False
+                        for event in event_recievers:
+                            try:
+                                self.add_event_reciever(event)
+                            except (RuntimeError, Exception):
+                                pass
+                            for ev in self.event_reciever:
+                                try:
+                                    ev()
+                                except Exception as e:
+                                    logger.error('An exception occured while executing an event listener: ', exc_info=e)
+                    except Exception as e:
+                        logger.error('An error occured while the SpotifyPlayer was reconnecting, '
+                                     'retrying in 30 seconds: ', exc_info=e)
+                        await asyncio.sleep(30)
 
         self.sleep_task_event_loop = None
         self.websocket_task_event_loop = None
@@ -316,23 +362,25 @@ class SpotifyPlayer:
         while True:
             if self.connection_id:
                 device_data = {"device": {"brand": "spotify", "capabilities":
-                                          {"change_volume": True, "enable_play_token": True,
-                                           "supports_file_media_type": True,
-                                           "play_token_lost_behavior": "pause",
-                                           "disable_connect": True, "audio_podcasts": True,
-                                           "video_playback": True,
-                                           "manifest_formats": ["file_urls_mp3",
-                                                                "manifest_ids_video",
-                                                                "file_urls_external",
-                                                                "file_ids_mp4",
-                                                                "file_ids_mp4_dual"]},
+                    {"change_volume": True, "enable_play_token": True,
+                     "supports_file_media_type": True,
+                     "play_token_lost_behavior": "pause",
+                     "disable_connect": True, "audio_podcasts": True,
+                     "video_playback": True,
+                     "manifest_formats": ["file_urls_mp3",
+                                          "manifest_ids_video",
+                                          "file_urls_external",
+                                          "file_ids_mp4",
+                                          "file_ids_mp4_dual"]},
                                           "device_id": self.device_id, "device_type": "computer",
                                           "metadata": {}, "model": "web_player", "name": "Spotify Player",
                                           "platform_identifier": "web_player windows 10;chrome 87.0.4280.66;desktop"},
                                "connection_id": self.connection_id, "client_version":
-                               "harmony:4.11.0-af0ef98",
+                                   "harmony:4.11.0-af0ef98",
                                "volume": 65535}
                 break
+            else:
+                time.sleep(0.5)
 
         device_headers = self._default_headers.copy()
         device_headers.update({'authorization': f'Bearer {self.access_token}'})
@@ -351,16 +399,16 @@ class SpotifyPlayer:
         hobs_headers.update({'authorization': f'Bearer {self.access_token}'})
         hobs_headers.update({'x-spotify-connection-id': self.connection_id})
         hobs_data = {"member_type": "CONNECT_STATE", "device": {"device_info":
-                                                                {"capabilities": {"can_be_player": False,
-                                                                                  "hidden": True}}}}
+                                                                    {"capabilities": {"can_be_player": False,
+                                                                                      "hidden": True}}}}
         response = self._session.put(hobs_url, headers=hobs_headers, data=json.dumps(hobs_data))
         try:
             self.queue = response.json()['player_state']['next_tracks']
         except KeyError:
             self.queue = []
         response_load = response.json()
-        response_options = response_load['player_state']['options']
         try:
+            response_options = response_load['player_state']['options']
             self.active_device_id = response_load['active_device_id']
             self.devices = response_load['devices']
             self.current_volume = response_load['devices'][self.active_device_id]['volume']
@@ -369,6 +417,8 @@ class SpotifyPlayer:
             self.playing = not response_load['player_state']['is_paused']
             self._last_position = int(response_load['player_state']['position_as_of_timestamp'])
             self._last_timestamp = int(response_load['player_state']['timestamp'])
+            diff = int(response_load['server_timestamp_ms'])
+            self._timestamp_diff = time.time() - diff / 1000
             if response_options['repeating_track']:
                 self.looping = 'track'
             elif response_options['repeating_context']:
@@ -381,8 +431,13 @@ class SpotifyPlayer:
     def get_position(self):
         if not self.playing:
             return self._last_position / 1000
-        diff = time.time() - self._last_timestamp / 1000
-        return self._last_position / 1000 + diff
+        last_diff = self.diff
+        self.diff = time.time() - self._timestamp_diff - self._last_timestamp / 1000 - 1
+        self.diff = 0 if self.diff < 0 else self.diff
+        if self.diff < 0:
+            self._last_position = self._last_position + last_diff * 1000
+            return self._last_position / 1000
+        return self._last_position / 1000 + self.diff
 
     def transfer(self, device_id):
         if self.access_token_expire < time.time():
@@ -409,16 +464,23 @@ class SpotifyPlayer:
     def create_api_request(self, path, request_type='GET'):
         if request_type.upper() in ['GET', 'PUT', 'DELETE', 'POST', 'PATCH', 'HEAD']:
             try:
-                return getattr(self._session, request_type.lower())('https://api.spotify.com/v1' + path,
-                                                                    headers={'Authorization': f'Bearer'
-                                                                                              f' {self.access_token}'})
+                req = getattr(self._session, request_type.lower())('https://api.spotify.com/v1' + path,
+                                                                   headers={'Authorization': f'Bearer'
+                                                                                             f' {self.access_token}'})
+                if req.status_code == 401:
+                    self._cancel_tasks()
+                    while not self.isinitialized:
+                        time.sleep(0.1)
+                    req = getattr(self._session, request_type.lower())('https://api.spotify.com/v1' + path,
+                                                                       headers={'Authorization': f'Bearer'
+                                                                                                 f' {self.access_token}'})
+                return req
             except RequestException:
                 return getattr(self._session, request_type.lower())('https://api.spotify.com/v1' + path,
                                                                     headers={'Authorization': f'Bearer'
                                                                                               f' {self.access_token}'})
 
     def _cancel_tasks(self):
-        print(self.tasks)
         self.websocket_task_event_loop.create_task(self.ws.close())
         [task.cancel() for task in self.tasks]
 
@@ -426,7 +488,9 @@ class SpotifyPlayer:
         self.force_disconnect = True
         self.websocket_task_event_loop.create_task(self.ws.close())
 
-    def command(self, command_dict):
+    def command(self, command_dict, retries=0):
+        if retries > 1:
+            raise RecursionError('Max amount of retries reached (2)')
         if self.access_token_expire < time.time():
             self._authorize()
             while not self.isinitialized:
@@ -456,7 +520,11 @@ class SpotifyPlayer:
                 player_headers.update({'authorization': f'Bearer {self.access_token}'})
                 response = self._session.post(player_url, headers=headers, data=json.dumps(player_data))
                 if response.status_code != 200:
-                    raise RequestException(f'Command failed: {response.json()}')
+                    try:
+                        raise RequestException(f'Command failed: {response.json()}')  # keep exception trace
+                    except RequestException:
+                        logger.error(f'Command failed, attempting retry {retries}/1')
+                        self.command(command_dict, retries + 1)
                 else:
                     logger.info(f'Command executed successfully. {player_data}')
         else:
@@ -473,7 +541,11 @@ class SpotifyPlayer:
                     response = self._session.put(player_url, headers=headers, data=json.dumps(player_data))
                     if response.status_code != 200:
                         try:
-                            raise RequestException(f'Command failed: {response.json()}')
+                            try:
+                                raise RequestException(f'Command failed: {response.json()}')  # keep exception trace
+                            except RequestException:
+                                logger.error(f'Command failed, attempting retry {retries}/1')
+                                self.command(command_dict, retries + 1)
                         except json.decoder.JSONDecodeError:
                             raise RequestException(f'Command failed.')
                     else:
@@ -485,7 +557,12 @@ class SpotifyPlayer:
                 if response.status_code != 200:
                     try:
                         response.json()
-                        raise RequestException(f'Command failed: {response.json()}')
+                        try:
+                            raise RequestException(f'Command failed: {response.json()}')  # keep exception trace
+                        except RequestException:
+                            logger.error(f'Command failed, attempting retry {retries}/1')
+                            time.sleep(1)
+                            self.command(command_dict, retries + 1)
                     except json.decoder.JSONDecodeError:
                         raise RequestException(f'Command failed.')
                 else:
